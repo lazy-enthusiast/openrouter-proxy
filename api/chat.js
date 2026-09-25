@@ -16,7 +16,16 @@ export default async function handler(req) {
     });
   }
 
-  // ===== 2. CORS 預檢 =====
+  // ===== 2. 確認 OPENROUTER_API_KEY 存在 =====
+  const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+  if (!OPENROUTER_API_KEY) {
+    return new Response(JSON.stringify({ error: 'Server misconfigured: OPENROUTER_API_KEY missing' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
+  // ===== 3. CORS 預檢 =====
   if (req.method === 'OPTIONS') {
     return new Response(null, {
       status: 204,
@@ -28,7 +37,7 @@ export default async function handler(req) {
     });
   }
 
-  // ===== 3. 健康檢查 =====
+  // ===== 4. 健康檢查 =====
   if (req.method === 'GET') {
     return new Response('OpenRouter Proxy is running!', { status: 200 });
   }
@@ -37,7 +46,7 @@ export default async function handler(req) {
     return new Response('Method not allowed', { status: 405 });
   }
 
-  // ===== 4. 轉發到 OpenRouter =====
+  // ===== 5. 轉發到 OpenRouter（自己注入 Authorization）=====
   try {
     const bodyText = await req.text();
 
@@ -45,7 +54,7 @@ export default async function handler(req) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': req.headers.get('authorization') || ''
+        'Authorization': `Bearer ${OPENROUTER_API_KEY}`
       },
       body: bodyText
     });
@@ -57,7 +66,7 @@ export default async function handler(req) {
         'Content-Type': upstream.headers.get('content-type') || 'text/event-stream',
         'Cache-Control': 'no-cache',
         'Access-Control-Allow-Origin': '*',
-        'X-Accel-Buffering': 'no'  // 防止中間層 buffering
+        'X-Accel-Buffering': 'no'
       }
     });
   } catch (error) {
