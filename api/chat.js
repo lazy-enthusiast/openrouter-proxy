@@ -1,57 +1,69 @@
-module.exports = async (req, res) => {
-  // 1. 設定跨域 CORS 標頭，允許 TypingMind 呼叫
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', '*');
+export const config = { runtime: 'edge' };
 
-  // 2. 處理瀏覽器跨域預檢
+export default async function handler(req) {
+  // ===== 1. 驗證 PROXY_SECRET =====
+  const PROXY_SECRET = process.env.PROXY_SECRET;
+  if (!PROXY_SECRET) {
+    return new Response(JSON.stringify({ error: 'Server misconfigured: PROXY_SECRET missing' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+  if (req.headers.get('x-proxy-secret') !== PROXY_SECRET) {
+    return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
+  // ===== 2. CORS 預檢 =====
   if (req.method === 'OPTIONS') {
-    return res.status(204).end();
+    return new Response(null, {
+      status: 204,
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'POST, OPTIONS',
+        'Access-Control-Allow-Headers': '*'
+      }
+    });
   }
 
-  // 3. 健康檢查：在瀏覽器打開此網址時顯示成功訊號
+  // ===== 3. 健康檢查 =====
   if (req.method === 'GET') {
-    return res.status(200).send('OpenRouter US Proxy is running!');
+    return new Response('OpenRouter Proxy is running!', { status: 200 });
   }
 
-  // 4. 轉發請求至 OpenRouter 核心對話介面
-  try {
-    const rawBody = typeof req.body === 'string'
-      ? req.body
-      : (req.body ? JSON.stringify(req.body) : undefined);
+  if (req.method !== 'POST') {
+    return new Response('Method not allowed', { status: 405 });
+  }
 
-    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+  // ===== 4. 轉發到 OpenRouter =====
+  try {
+    const bodyText = await req.text();
+
+    const upstream = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': req.headers['authorization'] || '',
+        'Authorization': req.headers.get('authorization') || ''
       },
-      body: rawBody,
+      body: bodyText
     });
 
-    res.status(response.status);
-
-    // 轉發回應標頭（排除衝突標頭）
-    response.headers.forEach((value, key) => {
-      const lower = key.toLowerCase();
-      if (!['content-encoding', 'content-length', 'transfer-encoding'].includes(lower)) {
-        res.setHeader(key, value);
+    // 直接回傳 upstream 的 body（Edge Function 會自動串流）
+    return new Response(upstream.body, {
+      status: upstream.status,
+      headers: {
+        'Content-Type': upstream.headers.get('content-type') || 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Access-Control-Allow-Origin': '*',
+        'X-Accel-Buffering': 'no'  // 防止中間層 buffering
       }
     });
-
-    // 即時串流文字輸出
-    if (response.body) {
-      const reader = response.body.getReader();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        res.write(value);
-      }
-      res.end();
-    } else {
-      res.end();
-    }
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return new Response(JSON.stringify({ error: error.message }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    });
   }
-};
+}
